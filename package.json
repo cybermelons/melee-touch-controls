@@ -1,0 +1,16 @@
+{
+  "name": "melee-touch-controls",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A character-specific touch gesture scheme for Melee on the web, as a runnable demo.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node tests/run-all.mjs",
+    "test:unit": "node tests/t_dir8.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

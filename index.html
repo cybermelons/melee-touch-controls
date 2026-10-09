@@ -1,0 +1,652 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Marth touch controls — demo</title>
+<style>
+  :root {
+    --ink: #e8e6e3; --dim: #8b8984; --line: #2b2a28;
+    --hot: #e0452f; --warm: #d9a13b; --cool: #4a8fb5;
+  }
+  /* touch-action does NOT inherit, so setting it on body alone left the HUD,
+     the tier switches, the log and the backdrop still double-tap zoomable.
+     Set it on every element and allow back only what needs a native gesture. */
+  * { box-sizing: border-box; touch-action: none; }
+  /* manipulation keeps tap working on real controls but still kills the
+     double-tap zoom and the 300ms tap delay. */
+  input, label, summary, button, a { touch-action: manipulation; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #141312; color: var(--ink);
+    font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow: hidden; touch-action: none;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  #stage { position: fixed; inset: 0; }
+
+  /* Fake game picture, so the pads sit over something and the layout reads
+     like the real overlay rather than a form. */
+  /* The play area IS the viewport. The HUD and the pads float on top of it as
+     a transparent overlay, exactly as #touch does over the canvas in
+     platforms/browser/index.html. Nothing here reserves a band of its own, so
+     no chrome shrinks the picture. */
+  #screen {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse at 50% 50%, #2a3f4d 0%, #16202a 55%, #0e1318 100%);
+  }
+  /* A floor line, so the full-viewport play area reads as a stage and the
+     character has somewhere to stand. */
+  #screen::after {
+    content: ''; position: absolute;
+    left: 0; right: 0; top: 62%; height: 1px;
+    background: linear-gradient(90deg, transparent, #4a6b85 20%, #4a6b85 80%, transparent);
+  }
+  /* Centred in the true viewport centre now, not offset to dodge a HUD band. */
+  #marth {
+    position: absolute; left: 50%; top: 62%;
+    width: 3vh; height: 9vh; margin-left: -1.5vh;
+    transform-origin: 50% 100%;
+    background: linear-gradient(#5b7fb5, #2d3f5e);
+    border: 1px solid #89a7d4; border-radius: 1vh 1vh 0 0;
+    transition: transform .09s linear;
+  }
+  #marth { margin-top: -9vh; }
+  /* The sword arc, drawn on the move. The tipper third is the hot colour --
+     the whole point of Marth, so the demo shows it. */
+  /* Centred on the character's torso, so the arc reads as his swing. The
+     earlier fixed margin was tuned for his old position and left the blade
+     floating away from him. */
+  #blade {
+    position: absolute; left: 50%; top: 62%;
+    width: 22vh; height: 22vh;
+    margin-left: -11vh; margin-top: -15.5vh;
+    opacity: 0; pointer-events: none;
+  }
+  #blade.go { animation: swing .22s ease-out; }
+  @keyframes swing { from { opacity: 0 } 20% { opacity: 1 } to { opacity: 0 } }
+
+  /* ---- Readout: the whole reason this is a demo and not a picture. ---- */
+  /* No background, no border: the text sits directly on the picture. A
+     text-shadow carries the contrast instead of a panel, so the overlay costs
+     the play area no pixels. Always visible, never fades -- the readout is the
+     point of the demo. */
+  /* The box, not only the text, must clear the pads: this is position:absolute,
+     so its rect spans whatever left/right allow even when the text is short,
+     and capping the text width alone left the rect over L and Z. Bound the box
+     to the clear band above the pad clusters and let it end where the text
+     ends. */
+  #hud {
+    position: absolute;
+    top: calc(8px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    width: max-content; max-width: 34vw;
+    pointer-events: none;
+    text-shadow: 0 1px 3px #000, 0 0 10px #000c;
+  }
+  #hud h1 { margin: 0 0 4px; font-size: 12px; letter-spacing: .08em; color: var(--dim); font-weight: 600; }
+  #move { font-size: 17px; color: var(--warm); min-height: 24px; }
+  #move .tip { color: var(--hot); }
+  #call { font-size: 11px; color: var(--cool); word-break: break-all; min-height: 15px; }
+  /* The hint is the one long line of text. Cap it so it cannot run under the
+     pads on a short landscape phone. */
+  /* Centred in the clear band between the two pad clusters, below the HUD and
+     above the stick. Its own box, so it no longer stretches #hud down into the
+     L and Z pads. */
+  #hint {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    top: calc(8px + env(safe-area-inset-top) + 1.6em);
+    width: min(42ch, 32vw);
+    font-size: 11px; color: var(--dim); text-align: center;
+    pointer-events: none;
+    text-shadow: 0 1px 3px #000, 0 0 8px #000c;
+  }
+
+  /* Rolling input log, bottom centre, so a gesture chain is legible after
+     the fact. Dancing Blade is 4 inputs and you cannot read it live. */
+  #log {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: calc(2vh + env(safe-area-inset-bottom));
+    width: min(46vw, 420px); max-height: 26vh; overflow: hidden;
+    font-size: 11px; color: var(--dim); text-align: center;
+    pointer-events: none;
+    text-shadow: 0 1px 3px #000, 0 0 8px #000c;
+  }
+  #log div { opacity: .55; }
+  #log div:first-child { opacity: 1; color: var(--ink); }
+
+  /* ---- Pads. Geometry copied from platforms/browser/index.html so the
+         demo and the shipped overlay do not drift apart. ---- */
+  .pad {
+    position: absolute; pointer-events: auto; touch-action: none;
+    display: grid; place-items: center;
+    border: 2px solid #ffffff44; border-radius: 50%;
+    background: #ffffff10; color: #fff;
+    font: 600 15px/1 ui-monospace, monospace;
+    min-width: 44px; min-height: 44px;
+  }
+  .pad.on { background: #ffffff45; border-color: #fffc; }
+  .pad small { display: block; font-size: 9px; font-weight: 400; color: #ffffffaa; margin-top: 2px; }
+  /* L, Z, Y and B sit directly above a big ring, and their sublabel overflowed
+     the circle onto that ring. Render it above the letter for those four, in
+     the empty space, instead of below it. Covered by t_layout.mjs. */
+  #pad-l, #pad-z, #pad-y, #pad-b { flex-direction: column-reverse; display: flex;
+    align-items: center; justify-content: center; }
+  #pad-l small, #pad-z small, #pad-y small, #pad-b small { margin: 0 0 2px; }
+
+  /* min(34vh, 30vw) so the ring cannot outgrow a short landscape viewport.
+     At 844x390 a flat 34vh plus the 6vh offset ran past the bottom edge and
+     clipped the stick -- the most-used control on the overlay. */
+  /* LANDSCAPE GEOMETRY.
+     Sizes are fractions of vh, the SHORT edge in landscape. A touch target has
+     to track the short edge: it runs out first. An earlier min(34vh, 30vw) cap
+     stopped the ring clipping but shrank every pad, and on a real phone the
+     controls read as small and bunched into the corners.
+     These values push the pads out to the edges and scale them up so the
+     overlay uses the whole screen. Verified at 844x390 by t_layout.mjs, which
+     checks the pads clear the edges and do not overlap each other. */
+  #pad-stick {
+    left: calc(1.5vw + env(safe-area-inset-left));
+    bottom: calc(2vh + env(safe-area-inset-bottom));
+    width: 44vh; height: 44vh;
+  }
+  #pad-cstick {
+    right: calc(1.5vw + env(safe-area-inset-right));
+    bottom: calc(2vh + env(safe-area-inset-bottom));
+    width: 38vh; height: 38vh;
+  }
+  /* A keeps the centre of the C ring, so a thumb on the ring aims the C-stick
+     and a thumb in the middle presses A. */
+  #pad-a {
+    right: calc(1.5vw + env(safe-area-inset-right) + 10vh);
+    bottom: calc(2vh + env(safe-area-inset-bottom) + 10vh);
+    width: 18vh; height: 18vh;
+  }
+  #pad-b {
+    right: calc(1.5vw + env(safe-area-inset-right) + 39vh);
+    bottom: calc(2vh + env(safe-area-inset-bottom) + 6vh);
+    width: 22vh; height: 22vh;
+    border-color: var(--hot);
+  }
+  #pad-y {
+    right: calc(1.5vw + env(safe-area-inset-right) + 8vh);
+    bottom: calc(2vh + env(safe-area-inset-bottom) + 40vh);
+    width: 22vh; height: 22vh;
+  }
+  #pad-l {
+    left: calc(1.5vw + env(safe-area-inset-left) + 1vh);
+    bottom: calc(2vh + env(safe-area-inset-bottom) + 46vh);
+    width: 22vh; height: 22vh;
+  }
+  #pad-z {
+    left: calc(1.5vw + env(safe-area-inset-left) + 26vh);
+    bottom: calc(2vh + env(safe-area-inset-bottom) + 46vh);
+    width: 22vh; height: 22vh;
+  }
+
+  .nub { width: 40%; height: 40%; border-radius: 50%; background: #ffffff70; pointer-events: none; }
+  /* The ring's label sits at its top edge, not its centre: the A pad occupies
+     the centre of the C ring and the two labels overlapped there. */
+  /* The C ring has a pad in its middle (A) and a pad above it (Y), so neither
+     the centre nor the top edge is free. Two offset attempts collided with
+     each in turn. Put the label on the ring's outer lower-left instead, which
+     is the one side nothing else occupies. */
+  /* The C ring carries its name on its own border arc, as a ::before, not as a
+     floating label. Three offset attempts (centre, above, outer-left) each hit
+     a different neighbour -- A fills the ring's middle, Y sits above it and B
+     inboard of it, so the ring has no free region for a text box. Drawing it
+     on the border sidesteps the problem instead of relocating it again.
+     A ::before is not an element, so it cannot collide in the layout check. */
+  #pad-cstick::before {
+    content: attr(data-ring);
+    /* Inside the ring's lower arc, below A. Above the ring put it outside the
+       circle and beside the Y pad, which read as belonging to Y. */
+    position: absolute; bottom: 7%; left: 50%; transform: translateX(-50%);
+    font-size: 11px; font-weight: 400; color: #ffffff88;
+    white-space: nowrap; pointer-events: none;
+    text-shadow: 0 1px 3px #000;
+  }
+  #pad-stick .nub { transition: none; }
+
+  /* Swipe trail on the B pad, so a Dancing Blade chain is visible while the
+     finger is still down. */
+  #trail { position: absolute; inset: 0; pointer-events: none; }
+
+  /* Assist tier switches. Tiered, per the design: competitive keeps 1 only. */
+  /* Top right: the only corner no pad occupies. Bottom left was tried and put
+     these checkboxes underneath the stick ring, which buried a real control
+     beneath the most-used pad. Covered by t_layout.mjs. */
+  #tiers {
+    position: absolute;
+    top: calc(8px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    pointer-events: auto;
+    text-align: right;
+    font-size: 11px; color: var(--dim);
+    text-shadow: 0 1px 3px #000, 0 0 8px #000c;
+  }
+  #tiers label { display: block; margin: 3px 0; cursor: pointer; }
+  #tiers input { vertical-align: -2px; accent-color: var(--hot); }
+
+  /* Portrait. The landscape rules place the pads off vh, which on a tall
+     screen makes the rings enormous and pushes L/Z/Y/B into each other. In
+     portrait, size everything off vw and give the cluster more vertical room.
+     Covered by t_layout.mjs at 390x844. */
+  @media (orientation: portrait) {
+    #pad-stick  { width: 40vw; height: 40vw; bottom: calc(4vh + env(safe-area-inset-bottom)); }
+    #pad-cstick { width: 32vw; height: 32vw; bottom: calc(4vh + env(safe-area-inset-bottom)); }
+    #pad-a { right: calc(4vw + env(safe-area-inset-right) + 9vw);  bottom: calc(4vh + env(safe-area-inset-bottom) + 9vw);  width: 14vw; height: 14vw; }
+    #pad-b { right: calc(4vw + env(safe-area-inset-right) + 34vw); bottom: calc(4vh + env(safe-area-inset-bottom) + 6vw);  width: 17vw; height: 17vw; }
+    #pad-y { right: calc(4vw + env(safe-area-inset-right) + 7vw);  bottom: calc(4vh + env(safe-area-inset-bottom) + 34vw); width: 17vw; height: 17vw; }
+    #pad-l { left:  calc(4vw + env(safe-area-inset-left));         bottom: calc(4vh + env(safe-area-inset-bottom) + 43vw); width: 17vw; height: 17vw; }
+    #pad-z { left:  calc(4vw + env(safe-area-inset-left) + 21vw);  bottom: calc(4vh + env(safe-area-inset-bottom) + 43vw); width: 17vw; height: 17vw; }
+    /* Above L and Z, which top out at y=576 on a 390x844 screen. */
+    #log { bottom: calc(76vw + env(safe-area-inset-bottom)); width: min(80vw, 420px); max-height: 14vh; }
+    #hint { width: 72vw; }
+  }
+</style>
+
+<div id="stage">
+  <div id="screen">
+    <div id="marth"></div>
+    <svg id="blade" viewBox="0 0 100 100">
+      <path id="blade-base" d="" fill="none" stroke="#cfe2f5" stroke-width="3" stroke-linecap="round"/>
+      <path id="blade-tip"  d="" fill="none" stroke="#e0452f" stroke-width="4" stroke-linecap="round"/>
+    </svg>
+  </div>
+
+  <div id="hud">
+    <h1>MARTH · TOUCH GESTURE MAP · DEMO</h1>
+    <div id="move">—</div>
+    <div id="call">&nbsp;</div>
+  </div>
+  <!-- The hint is instructional prose, not a live readout, so it sits in the
+       clear middle band rather than the corner. The pads now reach y=117 in
+       landscape and four lines of text in the corner overlapped L and Z. -->
+  <div id="hint">Drag the left ring to move. Flick it L/R twice for a dash-dance. Swipe it down-back for a wavedash. Tap/hold/swipe the red B pad for Dancing Blade. Swipe up from B for Dolphin Slash at that angle.</div>
+
+  <div id="tiers">
+    <label><input type="checkbox" id="t1" checked> T1 auto L-cancel</label>
+    <label><input type="checkbox" id="t2" checked> T2 tipper assist</label>
+    <label><input type="checkbox" id="t3"> T3 DI buffer</label>
+  </div>
+
+  <div class="pad" id="pad-stick"><div class="nub"></div></div>
+  <div class="pad" id="pad-cstick" data-ring="C · smash"></div>
+  <div class="pad" id="pad-a">A<small>tap/swipe</small></div>
+  <div class="pad" id="pad-b">B<small>blade chain</small><svg id="trail" viewBox="0 0 100 100"><path id="trail-p" d="" fill="none" stroke="#e0452f" stroke-width="3" stroke-linecap="round"/></svg></div>
+  <div class="pad" id="pad-y">Y<small>jump</small></div>
+  <div class="pad" id="pad-l">L<small>shield</small></div>
+  <div class="pad" id="pad-z">Z<small>grab</small></div>
+
+  <div id="log"></div>
+</div>
+
+<script type="module">
+// GameCube button bits, from dolphin/pad.h. The demo prints the same call the
+// real overlay makes: pc_touch_set_pad(buttons, sx, sy, cx, cy, l, r).
+const BTN = { A:0x0100, B:0x0200, X:0x0400, Y:0x0800, Z:0x0010, L:0x0040, R:0x0020, START:0x1000,
+              DL:0x0001, DR:0x0002, DD:0x0004, DU:0x0008 };
+
+const moveEl = document.getElementById('move');
+const callEl = document.getElementById('call');
+const logEl  = document.getElementById('log');
+const marth  = document.getElementById('marth');
+const blade  = document.getElementById('blade');
+const bladeBase = document.getElementById('blade-base');
+const bladeTip  = document.getElementById('blade-tip');
+
+const tier = id => document.getElementById(id).checked;
+
+function show(name, call, tipper) {
+  moveEl.innerHTML = tipper ? `${name} <span class="tip">· TIPPER</span>` : name;
+  callEl.textContent = call;
+  const d = document.createElement('div');
+  d.textContent = name;
+  logEl.prepend(d);
+  while (logEl.children.length > 9) logEl.lastChild.remove();
+}
+
+// buttons + stick -> the literal C call, so the mapping is reviewable.
+function call(buttons, sx = 0, sy = 0, cx = 0, cy = 0, l = 0, r = 0) {
+  const names = Object.entries(BTN).filter(([, b]) => buttons & b).map(([n]) => n);
+  const bs = names.length ? names.join('|') : '0';
+  return `pc_touch_set_pad(${bs}, ${sx|0}, ${sy|0}, ${cx|0}, ${cy|0}, ${l|0}, ${r|0})`;
+}
+
+// Swing the blade along an arc. frac = where the tipper third starts.
+function swing(a0, a1) {
+  const arc = (from, to) => {
+    const pts = [];
+    for (let i = 0; i <= 8; i++) {
+      const t = from + (to - from) * (i / 8);
+      pts.push(`${50 + 46 * Math.cos(t)},${50 + 46 * Math.sin(t)}`);
+    }
+    return 'M' + pts.join('L');
+  };
+  const mid = a0 + (a1 - a0) * 0.6;
+  bladeBase.setAttribute('d', arc(a0, mid));
+  bladeTip.setAttribute('d', arc(mid, a1));
+  blade.classList.remove('go');
+  void blade.offsetWidth;
+  blade.classList.add('go');
+}
+
+let facing = 1, x = 0;
+function nudge(dx) {
+  x = Math.max(-40, Math.min(40, x + dx));
+  marth.style.transform = `translateX(${x}vh) scaleX(${facing})`;
+}
+
+/* ---------------- Left ring: movement, dash-dance, wavedash ---------------- */
+const stick = document.getElementById('pad-stick');
+const nub = stick.querySelector('.nub');
+let sOrigin = null, flips = [], lastDir = 0;
+
+function stickVec(e, rect) {
+  const t = e.touches ? e.touches[0] : e;
+  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+  let dx = (t.clientX - cx) / (rect.width / 2);
+  let dy = (t.clientY - cy) / (rect.height / 2);
+  const m = Math.hypot(dx, dy);
+  if (m > 1) { dx /= m; dy /= m; }
+  return { dx, dy, m: Math.min(m, 1) };
+}
+
+function stickMove(e) {
+  if (!sOrigin) return;
+  e.preventDefault();
+  const { dx, dy, m } = stickVec(e, sOrigin);
+  nub.style.transform = `translate(${dx * 110}%, ${dy * 110}%)`;
+
+  const sx = Math.round(dx * 127), sy = Math.round(-dy * 127);
+
+  // Dash-dance: count direction reversals past the dash threshold (0.6 of the
+  // gate, where Melee's own dash initiation sits). Raw analog on glass cannot
+  // hit this reliably, so the reversal itself is the input.
+  const dir = m > 0.6 ? Math.sign(dx) : 0;
+  if (dir && dir !== lastDir) {
+    const now = performance.now();
+    flips = flips.filter(t => now - t < 500);
+    flips.push(now);
+    lastDir = dir;
+    facing = dir;
+    nudge(dir * 2);
+    if (flips.length >= 2) {
+      show('Dash-dance', call(0, sx, sy));
+      flips = [];
+      return;
+    }
+  } else if (!dir) { lastDir = 0; }
+
+  // Wavedash: down-back (or down-forward) past the threshold while airborne
+  // intent. One swipe emits the whole jump -> airdodge sequence.
+  if (dy > 0.55 && Math.abs(dx) > 0.45 && m > 0.75) {
+    show('Wavedash ' + (dx < 0 ? 'back' : 'forward'),
+         `jump(Y) -> airdodge(L) @ ${sx},${sy} · 1 gesture, buffered`);
+    facing = Math.sign(dx);
+    nudge(Math.sign(dx) * 7);
+    sOrigin = null;
+    nub.style.transform = '';
+    return;
+  }
+
+  if (m > 0.3) {
+    facing = dx !== 0 ? Math.sign(dx) : facing;
+    nudge(dx * 1.1);
+    callEl.textContent = call(0, sx, sy);
+  }
+}
+
+stick.addEventListener('pointerdown', e => {
+  stick.setPointerCapture(e.pointerId);
+  sOrigin = stick.getBoundingClientRect();
+  stick.classList.add('on');
+  stickMove(e);
+});
+stick.addEventListener('pointermove', stickMove);
+stick.addEventListener('pointerup', () => {
+  sOrigin = null; lastDir = 0;
+  nub.style.transform = '';
+  stick.classList.remove('on');
+  callEl.textContent = call(0, 0, 0);
+});
+
+/* ---------------- B pad: Dancing Blade chain + Dolphin Slash ---------------- */
+const bpad = document.getElementById('pad-b');
+const trailP = document.getElementById('trail-p');
+let bDown = null, bRect = null, dbStage = 0, dbTimer = null, dbPath = [];
+
+const DB_NAME = ['Dancing Blade 1', 'Dancing Blade 2', 'Dancing Blade 3', 'Dancing Blade 4'];
+
+function dir8(dx, dy) {
+  if (Math.hypot(dx, dy) < 0.35) return null;
+  if (dy < -0.5 && Math.abs(dx) < 0.8) return 'up';
+  if (dy > 0.5 && Math.abs(dx) < 0.8) return 'down';
+  return 'side';
+}
+
+function dbAdvance(d) {
+  if (dbStage >= 4) return;
+  const branch = dbStage === 0 ? '' : ' ' + d;
+  const sy = d === 'up' ? 100 : d === 'down' ? -100 : 0;
+  const sx = d === 'side' ? 100 * facing : 0;
+  show(DB_NAME[dbStage] + branch, call(BTN.B, sx, sy) + '  // buffered to earliest valid frame');
+  swing(-1.4 + dbStage * 0.5, 0.5 + dbStage * 0.5);
+  nudge(facing * 2);
+  dbStage++;
+  clearTimeout(dbTimer);
+  // Dancing Blade's real window between hits is generous (about 20 frames);
+  // the demo uses 700ms so the chain lapses if you stop.
+  dbTimer = setTimeout(() => { dbStage = 0; }, 700);
+}
+
+bpad.addEventListener('pointerdown', e => {
+  bpad.setPointerCapture(e.pointerId);
+  bRect = bpad.getBoundingClientRect();
+  bDown = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false, fired: false };
+  dbPath = [[50, 50]];
+  bpad.classList.add('on');
+});
+
+bpad.addEventListener('pointermove', e => {
+  if (!bDown) return;
+  e.preventDefault();
+  const dx = (e.clientX - bDown.x) / (bRect.width / 2);
+  const dy = (e.clientY - bDown.y) / (bRect.height / 2);
+  dbPath.push([50 + dx * 45, 50 + dy * 45]);
+  trailP.setAttribute('d', 'M' + dbPath.map(p => p.join(',')).join('L'));
+
+  const d = dir8(dx, dy);
+  if (!d) return;
+
+  // First swipe up from rest = Dolphin Slash at the swipe angle, no stick.
+  if (dbStage === 0 && d === 'up' && !bDown.fired) {
+    const ang = Math.round(Math.atan2(-dy, dx) * 180 / Math.PI);
+    show(`Dolphin Slash @ ${ang}°`, call(BTN.B, Math.round(dx * 90), Math.round(-dy * 90)));
+    swing(-2.2, -0.4);
+    bDown.fired = true; bDown.moved = true;
+    return;
+  }
+
+  // Each new swipe direction past the threshold advances the chain, and the
+  // finger never leaves the glass.
+  if (!bDown.lastDir || bDown.lastDir !== d) {
+    bDown.lastDir = d;
+    bDown.moved = true;
+    if (dbStage === 0) dbAdvance('side'); // DB1 has no branch
+    else dbAdvance(d);
+    bDown.x = e.clientX; bDown.y = e.clientY; // re-origin for the next link
+    dbPath = [[50, 50]];
+  }
+});
+
+bpad.addEventListener('pointerup', e => {
+  bpad.classList.remove('on');
+  trailP.setAttribute('d', '');
+  if (!bDown) return;
+  const held = performance.now() - bDown.t;
+  if (!bDown.moved) {
+    // A hold only means Shield Breaker from rest. Once the chain is live a hold
+    // would otherwise cancel it, and holding through a Dancing Blade is normal.
+    if (held > 400 && dbStage === 0) {
+      show('Shield Breaker (charged)', call(BTN.B) + `  // held ${Math.round(held)}ms`);
+      swing(-1.0, 0.2);
+    } else {
+      // Advance at ANY stage. Repeated plain taps are the no-branch 4-hit
+      // Dancing Blade, so this must not be gated on dbStage === 0 -- that bug
+      // made the chain unable to continue by tapping.
+      dbAdvance('side');
+    }
+  }
+  bDown = null;
+});
+
+/* ---------------- A pad: tap / hold / swipe, context ground vs air -------- */
+const apad = document.getElementById('pad-a');
+let aDown = null, aRect = null;
+
+const A_MOVES = {
+  tap:   ['Jab 1',        0,    0,   -1.1, 0.1],
+  up:    ['Up-air',       0,    100, -2.4, -0.6],
+  down:  ['Down-air',     0,   -100,  0.5, 1.8],
+  side:  ['Forward-air',  100,  0,   -1.2, 0.4],
+  hold:  ['F-smash (charged)', 0, 0, -1.3, 0.3],
+};
+
+apad.addEventListener('pointerdown', e => {
+  apad.setPointerCapture(e.pointerId);
+  aRect = apad.getBoundingClientRect();
+  aDown = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false };
+  apad.classList.add('on');
+});
+
+apad.addEventListener('pointermove', e => {
+  if (!aDown || aDown.moved) return;
+  e.preventDefault();
+  const dx = (e.clientX - aDown.x) / (aRect.width / 2);
+  const dy = (e.clientY - aDown.y) / (aRect.height / 2);
+  const d = dir8(dx, dy);
+  if (!d) return;
+  aDown.moved = true;
+  fireA(d, dx);
+});
+
+apad.addEventListener('pointerup', () => {
+  apad.classList.remove('on');
+  if (!aDown) return;
+  const held = performance.now() - aDown.t;
+  if (!aDown.moved) fireA(held > 400 ? 'hold' : 'tap', 0, held);
+  aDown = null;
+});
+
+function fireA(kind, dx = 0, held = 0) {
+  const [name, sxu, sy, a0, a1] = A_MOVES[kind];
+  const sx = sxu * (dx < 0 ? -1 : facing);
+  // T2 tipper assist: a forward-air swipe snaps spacing into the tipper band.
+  const tipper = tier('t2') && (kind === 'side' || kind === 'hold');
+  let c = call(BTN.A, sx, sy);
+  if (kind === 'hold') c += `  // held ${Math.round(held)}ms`;
+  if (tipper) c += '  // T2: spacing snapped to tipper band';
+  // T1 auto L-cancel: an aerial that lands needs no extra input at all.
+  if (tier('t1') && ['up', 'down', 'side'].includes(kind)) c += '  // T1: L-cancel auto';
+  show(name, c, tipper);
+  swing(a0, a1);
+  nudge(facing * 1.5);
+}
+
+/* ---------------- Simple pads ---------------- */
+const SIMPLE = {
+  'pad-y': ['Jump', BTN.Y],
+  'pad-l': ['Shield', BTN.L, 1],
+  'pad-z': ['Grab', BTN.Z],
+};
+for (const [id, [name, bit, isTrig]] of Object.entries(SIMPLE)) {
+  const el = document.getElementById(id);
+  el.addEventListener('pointerdown', e => {
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('on');
+    show(name, isTrig ? call(bit, 0, 0, 0, 0, 255, 0) : call(bit));
+  });
+  el.addEventListener('pointerup', () => { el.classList.remove('on'); });
+}
+
+/* C-stick ring: a flick aims a smash, and the direction is the ring angle. */
+const cpad = document.getElementById('pad-cstick');
+let cRect = null;
+cpad.addEventListener('pointerdown', e => {
+  if (e.target !== cpad) return;
+  cpad.setPointerCapture(e.pointerId);
+  cRect = cpad.getBoundingClientRect();
+  cpad.classList.add('on');
+});
+cpad.addEventListener('pointermove', e => {
+  if (!cRect || e.target !== cpad) return;
+  e.preventDefault();
+  const { dx, dy, m } = stickVec(e, cRect);
+  if (m < 0.55) return;
+  const d = dir8(dx, dy);
+  const names = { up: 'Up-smash', down: 'Down-smash', side: 'Forward-smash' };
+  const tipper = tier('t2') && d === 'side';
+  show(names[d], call(0, 0, 0, Math.round(dx * 127), Math.round(-dy * 127)) +
+       (tipper ? '  // T2: spacing snapped to tipper band' : ''), tipper);
+  swing(d === 'up' ? -2.4 : d === 'down' ? 0.4 : -1.3,
+        d === 'up' ? -0.6 : d === 'down' ? 1.9 : 0.3);
+  cRect = null;
+});
+cpad.addEventListener('pointerup', () => { cRect = null; cpad.classList.remove('on'); });
+
+/* ---------------- Keyboard mirror, so this is testable on a desktop ------- */
+// Not part of the scheme. It only exists so the demo can be driven without a
+// touchscreen: each key fires the same handler a gesture would.
+const KEYS = {
+  KeyB: () => dbAdvance('side'),
+  KeyU: () => dbAdvance('up'),
+  KeyN: () => dbAdvance('down'),
+  KeyX: () => fireA('tap'),
+  KeyI: () => fireA('up'),
+  KeyK: () => fireA('down'),
+  KeyJ: () => fireA('side'),
+  KeyS: () => { facing = -facing; show('Dash-dance', call(0, 80 * facing, 0)); nudge(facing * 3); },
+  KeyW: () => show('Wavedash back', 'jump(Y) -> airdodge(L) @ -80,-70 · 1 gesture, buffered'),
+};
+addEventListener('keydown', e => { const f = KEYS[e.code]; if (f) { e.preventDefault(); f(); } });
+
+/* ---------------- Block the browser's own zoom gestures ---------------- */
+// iOS Safari ignores maximum-scale and user-scalable in the viewport meta, so
+// the CSS and the meta tag together still leave double-tap and pinch zoom
+// live. These listeners are the only thing that actually stops them.
+// passive:false is required -- a passive listener cannot preventDefault.
+for (const type of ['gesturestart', 'gesturechange', 'gestureend', 'dblclick']) {
+  document.addEventListener(type, e => e.preventDefault(), { passive: false });
+}
+// NO touchend double-tap suppressor here, deliberately. An earlier version
+// swallowed a second tap inside 300ms to block double-tap zoom, and that broke
+// the Dancing Blade chain: tapping B twice quickly is a REQUIRED input, and the
+// blocker ate the second tap so the chain stalled on DB1. touch-action:none
+// above already stops double-tap zoom on every element, so the suppressor was
+// both redundant and harmful. Covered by t_pads.mjs.
+
+/* ---------------- One runnable self-check ---------------- */
+// The direction classifier is the only non-trivial logic here: every gesture
+// routes through dir8, so a broken threshold silently remaps the whole scheme.
+function selfCheck() {
+  const cases = [
+    [0, 0, null, 'dead zone stays null'],
+    [0.1, 0.1, null, 'inside dead zone'],
+    [0, -1, 'up', 'straight up'],
+    [0, 1, 'down', 'straight down'],
+    [1, 0, 'side', 'straight side'],
+    [-1, 0, 'side', 'side is unsigned'],
+    [0.9, -0.9, 'side', 'diagonal favours side, so a dash-dance flick is not an up-B'],
+  ];
+  const bad = cases.filter(([dx, dy, want]) => dir8(dx, dy) !== want);
+  if (bad.length) {
+    console.error('dir8 self-check FAILED', bad);
+    moveEl.textContent = 'dir8 self-check FAILED — see console';
+    moveEl.style.color = '#e0452f';
+  } else {
+    console.log(`dir8 self-check: ${cases.length}/${cases.length} pass`);
+  }
+}
+selfCheck();
+</script>
